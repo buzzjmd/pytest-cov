@@ -7,6 +7,7 @@ import sys
 
 import coverage
 from coverage.data import CoverageData
+from coverage.misc import CoverageException
 
 from .compat import StringIO
 
@@ -153,10 +154,15 @@ class Central(CovController):
                                                branch=self.cov_branch,
                                                data_file=os.path.abspath(self.cov.config.data_file),
                                                config_file=self.cov_config)
+
+        if self.cov_append and self.cov.get_option("run:parallel"):
+            raise CoverageException("Can't append to data files in parallel mode.")
+
         if self.cov_append:
             self.cov.load()
         else:
-            self.cov.erase()
+            if not self.cov.get_option("run:parallel"):
+                self.cov.erase()
         self.cov.start()
         self.set_env()
 
@@ -167,10 +173,11 @@ class Central(CovController):
         self.cov.stop()
         self.cov.save()
 
-        self.cov = self.combining_cov
-        self.cov.load()
-        self.cov.combine()
-        self.cov.save()
+        if not self.cov.get_option("run:parallel"):
+            self.cov = self.combining_cov
+            self.cov.load()
+            self.cov.combine()
+            self.cov.save()
 
         node_desc = self.get_node_desc(sys.platform, sys.version_info)
         self.node_descs.add(node_desc)
