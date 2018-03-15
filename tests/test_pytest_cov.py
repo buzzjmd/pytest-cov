@@ -23,6 +23,7 @@ except ImportError:
 import pytest_cov.plugin
 
 coverage, StrictVersion  # required for skipif mark on test_cov_min_from_coveragerc
+_fix = True  # must be True to adjust tests for 'respect parallel fix'
 
 SCRIPT = '''
 import sys, helper
@@ -155,6 +156,8 @@ DEST_DIR = 'cov_dest'
 REPORT_NAME = 'cov.xml'
 
 xdist = pytest.mark.parametrize('opts', ['', '-n 1'], ids=['nodist', 'xdist'])
+parallel = pytest.mark.parametrize('parallel', [None,False,True], 
+          ids=['noparallel', 'parallelfalse', 'paralleltrue'])
 
 
 @pytest.fixture(params=[
@@ -174,6 +177,33 @@ def prop(request):
         result=request.param[2],
         result2=request.param[3],
     )
+
+
+def combine_coverage1(testdir):
+    assert testdir.tmpdir == os.getcwd()
+    cov = coverage.Coverage()
+    cov.load()
+    cov.combine()
+    cov.save()
+    stdout_file = testdir.tmpdir.join('stdout')
+    with stdout_file.open(mode='a') as f:
+        cov.report(file=f)
+    return stdout_file.read()
+
+
+def combine_coverage(testdir):
+    assert testdir.tmpdir == os.getcwd()
+    cov = coverage.Coverage()
+    cov.load()
+    cov.combine()
+    cov.save()
+    return cov
+
+
+def get_coverage_report(cov, show_missing=False):
+    buff = StringIO()
+    cov.report(file=buff,  show_missing=show_missing)
+    return buff.getvalue()
 
 
 def test_central(testdir, prop):
@@ -396,8 +426,9 @@ def test_central_coveragerc(testdir, prop):
     assert result.ret == 0
 
 
+@parallel
 @xdist
-def test_central_with_path_aliasing(testdir, monkeypatch, opts, prop):
+def test_central_with_path_aliasing(testdir, monkeypatch, opts, prop, LineMatcher, request, parallel):
     mod1 = testdir.mkdir('src').join('mod.py')
     mod1.write(SCRIPT)
     mod2 = testdir.mkdir('aliased').join('mod.py')
@@ -412,9 +443,10 @@ source =
     aliased
 [coverage:run]
 source = mod
-parallel = true
 %s
-""" % prop.conf)
+%s
+""" % ('' if parallel is None else 'parallel = %s' % parallel,
+        prop.conf))
 
     monkeypatch.setitem(os.environ, 'PYTHONPATH', os.pathsep.join([os.environ.get('PYTHONPATH', ''), 'aliased']))
     result = testdir.runpytest('-v', '-s',
@@ -422,11 +454,24 @@ parallel = true
                                '--cov-report=term-missing',
                                script, *opts.split()+prop.args)
 
-    result.stdout.fnmatch_lines([
-        '*- coverage: platform *, python * -*',
-        'src[\\/]mod* %s *' % prop.result,
-        '*10 passed*',
-    ])
+    if _fix and parallel:
+        result.stdout.fnmatch_lines([
+            "*WARNING: Failed to generate report*",
+            #"*WARNING: *Can't create report in parallel mode*",
+            '*10 passed*',
+        ])
+        cov = combine_coverage(testdir)
+        report = get_coverage_report(cov, show_missing=True)
+        LineMatcher(report.splitlines()).fnmatch_lines([
+            'Name* Stmts* Miss* Cover*',
+            'src[\\/]mod* %s*' % prop.result,
+        ])
+    else:
+        result.stdout.fnmatch_lines([
+            '*- coverage: platform *, python * -*',
+            'src[\\/]mod* %s *' % prop.result,
+            '*10 passed*',
+        ])
 
     # single-module coverage report
     assert all(not line.startswith('TOTAL ') for line in result.stdout.lines[-4:])
@@ -434,7 +479,8 @@ parallel = true
     assert result.ret == 0
 
 
-def test_subprocess_with_path_aliasing(testdir, monkeypatch):
+@parallel
+def test_subprocess_with_path_aliasing(testdir, monkeypatch, LineMatcher, parallel):
     src = testdir.mkdir('src')
     src.join('parent_script.py').write(SCRIPT_PARENT)
     src.join('child_script.py').write(SCRIPT_CHILD)
@@ -452,20 +498,34 @@ source =
 source =
     parent_script
     child_script
-parallel = true
-""")
+%s
+""" % ('' if parallel is None else 'parallel = %s' % parallel))
 
     monkeypatch.setitem(os.environ, 'PYTHONPATH', os.pathsep.join([os.environ.get('PYTHONPATH',''), 'aliased']))
     result = testdir.runpytest('-v',
                                '--cov',
                                '--cov-report=term-missing',
                                parent_script)
-
-    result.stdout.fnmatch_lines([
-        '*- coverage: platform *, python * -*',
-        'src[\\/]child_script* %s*' % CHILD_SCRIPT_RESULT,
-        'src[\\/]parent_script* %s*' % PARENT_SCRIPT_RESULT,
-    ])
+    if _fix and parallel:
+        result.stdout.fnmatch_lines([
+            "*WARNING: Failed to generate report*",
+            #"*WARNING: *Can't create report in parallel mode*",
+            #"*INTERNALERROR> ValueError: *Can't create report in parallel mode*",
+            '*2 passed*',
+        ])
+        cov = combine_coverage(testdir)
+        report = get_coverage_report(cov, show_missing=True)
+        LineMatcher(report.splitlines()).fnmatch_lines([
+            'Name* Stmts* Miss* Cover* Missing',
+            'src[\\/]child_script* %s*' % CHILD_SCRIPT_RESULT,
+            'src[\\/]parent_script* %s*' % PARENT_SCRIPT_RESULT,
+        ])
+    else:
+        result.stdout.fnmatch_lines([
+            '*- coverage: platform *, python * -*',
+            'src[\\/]child_script* %s*' % CHILD_SCRIPT_RESULT,
+            'src[\\/]parent_script* %s*' % PARENT_SCRIPT_RESULT,
+        ])
     assert result.ret == 0
 
 
@@ -589,18 +649,21 @@ def test_dist_collocated(testdir, prop):
     assert result.ret == 0
 
 
-def test_dist_not_collocated(testdir, prop):
+@parallel
+def test_dist_not_collocated(testdir, prop, LineMatcher, parallel):
     script = testdir.makepyfile(prop.code)
     dir1 = testdir.mkdir('dir1')
     dir2 = testdir.mkdir('dir2')
     testdir.tmpdir.join('.coveragerc').write('''
 [run]
-%s
+%s%s
 [paths]
 source =
     .
     dir1
-    dir2''' % prop.conf)
+    dir2''' % (prop.conf, 
+        '' if parallel is None else '\nparallel = %s' % parallel)
+    )
 
     result = testdir.runpytest('-v',
                                '--cov=%s' % script.dirpath(),
@@ -613,11 +676,23 @@ source =
                                '--max-slave-restart=0', '-s',
                                script, *prop.args)
 
-    result.stdout.fnmatch_lines([
-        '*- coverage: platform *, python * -*',
-        'test_dist_not_collocated* %s *' % prop.result,
-        '*10 passed*'
-    ])
+    if _fix and parallel:
+        result.stdout.fnmatch_lines([
+            "*WARNING: Failed to generate report*",
+            '*10 passed*',
+        ])
+        cov = combine_coverage(testdir)
+        report = get_coverage_report(cov, show_missing=True)
+        LineMatcher(report.splitlines()).fnmatch_lines([
+            'Name* Stmts* Miss* Cover*',
+            'test_dist_not_collocated* %s *' % prop.result,
+        ])
+    else:
+        result.stdout.fnmatch_lines([
+            '*- coverage: platform *, python * -*',
+            'test_dist_not_collocated* %s *' % prop.result,
+            '*10 passed*'
+        ])
     assert result.ret == 0
 
 
@@ -639,39 +714,49 @@ def test_central_subprocess(testdir):
     assert result.ret == 0
 
 
-def test_central_subprocess_change_cwd(testdir):
+@parallel
+def test_central_subprocess_change_cwd(testdir, LineMatcher, parallel):
     scripts = testdir.makepyfile(parent_script=SCRIPT_PARENT_CHANGE_CWD,
                                  child_script=SCRIPT_CHILD)
     parent_script = scripts.dirpath().join('parent_script.py')
     testdir.makefile('', coveragerc="""
 [run]
-branch = true
-parallel = true
-""")
-
+branch = true%s
+""" % ('' if parallel is None else '\nparallel = %s' % parallel))
+    
     result = testdir.runpytest('-v', '-s',
                                '--cov=%s' % scripts.dirpath(),
                                '--cov-config=coveragerc',
                                '--cov-report=term-missing',
                                parent_script)
-
-    result.stdout.fnmatch_lines([
-        '*- coverage: platform *, python * -*',
-        '*child_script* %s*' % CHILD_SCRIPT_RESULT,
-        '*parent_script* 100%*',
-    ])
+    if _fix and parallel:
+        result.stdout.fnmatch_lines([
+            "*WARNING: Failed to generate report*",
+        ])
+        cov = combine_coverage(testdir)
+        report = get_coverage_report(cov, show_missing=True)
+        LineMatcher(report.splitlines()).fnmatch_lines([
+            '*child_script* %s*' % CHILD_SCRIPT_RESULT,
+            '*parent_script* 100%*',
+        ])
+    else:
+        result.stdout.fnmatch_lines([
+            '*- coverage: platform *, python * -*',
+            '*child_script* %s*' % CHILD_SCRIPT_RESULT,
+            '*parent_script* 100%*',
+        ])
     assert result.ret == 0
 
 
-def test_central_subprocess_change_cwd_with_pythonpath(testdir, monkeypatch):
+@parallel
+def test_central_subprocess_change_cwd_with_pythonpath(testdir, monkeypatch, LineMatcher, parallel):
     stuff = testdir.mkdir('stuff')
     parent_script = stuff.join('parent_script.py')
     parent_script.write(SCRIPT_PARENT_CHANGE_CWD_IMPORT_CHILD)
     stuff.join('child_script.py').write(SCRIPT_CHILD)
     testdir.makefile('', coveragerc="""
-[run]
-parallel = true
-""")
+[run]%s
+""" % ('' if parallel is None else '\nparallel = %s' % parallel))
 
     monkeypatch.setitem(os.environ, 'PYTHONPATH', str(stuff))
     result = testdir.runpytest('-vv', '-s',
@@ -680,15 +765,26 @@ parallel = true
                                '--cov-report=term-missing',
                                '--cov-branch',
                                parent_script)
-
-    result.stdout.fnmatch_lines([
-        '*- coverage: platform *, python * -*',
-        '*child_script* %s*' % CHILD_SCRIPT_RESULT,
-    ])
+    if _fix and parallel:
+        result.stdout.fnmatch_lines([
+            "*WARNING: Failed to generate report*",
+        ])
+        cov = combine_coverage(testdir)
+        report = get_coverage_report(cov, show_missing=True)
+        LineMatcher(report.splitlines()).fnmatch_lines([
+            'Name* Stmts* Miss* Branch* BrPart* Cover*',
+            '*child_script* %s*' % CHILD_SCRIPT_RESULT,
+        ])
+    else:
+        result.stdout.fnmatch_lines([
+            '*- coverage: platform *, python * -*',
+            '*child_script* %s*' % CHILD_SCRIPT_RESULT,
+        ])
     assert result.ret == 0
 
 
-def test_central_subprocess_no_subscript(testdir):
+@parallel
+def test_central_subprocess_no_subscript(testdir, LineMatcher, parallel):
     script = testdir.makepyfile("""
 import subprocess, sys
 
@@ -696,20 +792,30 @@ def test_foo():
     subprocess.check_call([sys.executable, '-c', 'print("Hello World")'])
 """)
     testdir.makefile('', coveragerc="""
-[run]
-parallel = true
+[run]%s
 omit =
     */__init__.py
-""")
+""" % ('' if parallel is None else '\nparallel = %s' % parallel))
     result = testdir.runpytest('-v',
                                '--cov-config=coveragerc',
                                '--cov=%s' % script.dirpath(),
                                '--cov-branch',
                                script)
-    result.stdout.fnmatch_lines([
-        '*- coverage: platform *, python * -*',
-        'test_central_subprocess_no_subscript* * 3 * 0 * 100%*',
-    ])
+    if _fix and parallel:
+        result.stdout.fnmatch_lines([
+            "*WARNING: Failed to generate report*",
+        ])
+        cov = combine_coverage(testdir)
+        report = get_coverage_report(cov)
+        LineMatcher(report.splitlines()).fnmatch_lines([
+            'Name* Stmts* Miss* Branch* BrPart* Cover*',
+            'test_central_subprocess_no_subscript* * 3 * 0 * 100%*',
+        ])
+    else:
+        result.stdout.fnmatch_lines([
+            '*- coverage: platform *, python * -*',
+            'test_central_subprocess_no_subscript* * 3 * 0 * 100%*',
+        ])
     assert result.ret == 0
 
 
@@ -1277,13 +1383,15 @@ data_file = %s
     assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data*')))
 
 
-def test_external_data_file_xdist(testdir):
+@parallel
+def test_external_data_file_xdist(testdir, parallel):
     script = testdir.makepyfile(SCRIPT)
     testdir.tmpdir.join('.coveragerc').write("""
-[run]
-parallel = true
+[run]%s
 data_file = %s
-""" % testdir.tmpdir.join('some/special/place/coverage-data').ensure())
+""" % ('' if parallel is None else '\nparallel = %s' % parallel, 
+        testdir.tmpdir.join('some/special/place/coverage-data').ensure()))
+        
 
     result = testdir.runpytest('-v',
                                '--cov=%s' % script.dirpath(),
@@ -1291,7 +1399,9 @@ data_file = %s
                                '--max-slave-restart=0',
                                script)
     assert result.ret == 0
-    assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data*')))
+    assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data')))
+    if _fix and parallel:
+        assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data.*')))
 
 
 def test_external_data_file_negative(testdir):
