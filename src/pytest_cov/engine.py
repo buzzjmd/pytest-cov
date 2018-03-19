@@ -92,7 +92,7 @@ class CovController(object):
                 total = self.cov.report(show_missing=True, ignore_errors=True, file=null)
                 return total
 
-        if _fix0 and self.cov.get_option("run:parallel"):
+        if _fix0 and self.combining_cov.get_option("run:parallel"):
             raise CoverageException("Can't create report in parallel mode "
             #raise ValueError("Can't create report in parallel mode "
                 "(instead, use '--cov-report=' option and run "
@@ -163,21 +163,26 @@ class Central(CovController):
         """Erase any previous coverage data and start coverage."""
         self.cov = coverage.coverage(source=self.cov_source,
                                      branch=self.cov_branch,
+                                     data_suffix=True if _fix1a else None,
                                      config_file=self.cov_config)
         self.combining_cov = coverage.coverage(source=self.cov_source,
                                                branch=self.cov_branch,
                                                data_file=os.path.abspath(self.cov.config.data_file),
-                                               #data_suffix=True,
                                                config_file=self.cov_config)
 
 
-        if _fix1a and (self.cov_append and self.cov.get_option("run:parallel")):
+        if _fix1a and (self.cov_append and self.combining_cov.get_option("run:parallel")):
             raise CoverageException("Can't append to data files in parallel mode.")
 
-        if self.cov_append:
-            self.cov.load()
+        if not _fix1e:
+            if self.cov_append:
+                self.cov.load()
+            else:
+                self.cov.erase()
         else:
-            if not _fix1e or not self.cov.get_option("run:parallel"):
+            if self.cov_append:
+                self.combining_cov.load()
+            else:
                 self.cov.erase()
         self.cov.start()
         self.set_env()
@@ -185,26 +190,10 @@ class Central(CovController):
     def finish(self):
         """Stop coverage, save data to file and set the list of coverage objects to report on."""
 
-        if not _fix1c or self.cov.get_option("run:parallel"):
-            self.unset_env()
-            self.cov.stop()
-            self.cov.save()  ## the buf because saves as .coverage in parallel mode
-
-            if 0: ##!!!!! Dont think I shoud combine in parallel mode
-                self.cov = self.combining_cov
-                self.cov.load()
-                self.cov.combine()
-                self.cov.save()
-        else:
-            self.unset_env()
-            self.cov.stop()
-
-            
-            #self.cov.save()  ## Problem: saves as .coverage when not in parallel mode
-            self.cov._init()
-            self.cov.get_data()
-            self.cov.data_files.write(self.cov.data, suffix='anywilldo')
-
+        self.unset_env()
+        self.cov.stop()
+        self.cov.save()
+        if not _fix1c or not self.combining_cov.get_option("run:parallel"):
             self.cov = self.combining_cov
             self.cov.load()
             self.cov.combine()
@@ -233,11 +222,12 @@ class DistMaster(CovController):
                                                branch=self.cov_branch,
                                                data_file=os.path.abspath(self.cov.config.data_file),
                                                config_file=self.cov_config)
-        if self.cov_append:
+        if _fix2e and self.cov_append:
+            self.combining_cov.load()
+        elif not _fix2e and self.cov_append:
             self.cov.load()
         else:
-            if not _fix2e or not self.cov.get_option("run:parallel"):
-                self.cov.erase()
+            self.cov.erase()
         self.cov.start()
         self.cov.config.paths['source'] = [self.topdir]
 
@@ -287,20 +277,19 @@ class DistMaster(CovController):
     def finish(self):
         """Combines coverage data and sets the list of coverage objects to report on."""
 
-        if not _fix2c or not self.cov.get_option("run:parallel"):
+        self.cov.stop()
+        self.cov.save()
+        if not _fix2c or not self.combining_cov.get_option("run:parallel"):
             # Combine all the suffix files into the data file.
-            self.cov.stop()
-            self.cov.save()
-
             self.cov = self.combining_cov
             self.cov.load()
             self.cov.combine()
             self.cov.save()
 
 
-#_fix3d = 0 if _fix < 0 else _fix  # Don't use, Not a valid fix
 _fix3e = 1 if _fix < 0 else _fix
-_fix3c = 1 if _fix < 0 else _fix
+#_fix3c = 1 if _fix < 0 else _fix
+_fix3c = 0
 
 class DistSlave(CovController):
     """Implementation for distributed slaves."""
@@ -324,13 +313,15 @@ class DistSlave(CovController):
         self.cov = coverage.coverage(source=self.cov_source,
                                      branch=self.cov_branch,
                                      data_suffix=True,
-                                     #data_suffix=True if not _fix3d else None,
                                      config_file=self.cov_config)
-        if self.cov_append:
-            self.cov.load()
-        else:
-            if not _fix3e or not self.cov.get_option("run:parallel"):
+        if not _fix3e:
+            if self.cov_append:
+                self.cov.load()
+            else:
                 self.cov.erase()
+        else:
+            if self.cov_append:
+                self.combining_cov.load()
         self.cov.start()
         self.set_env()
 
@@ -349,13 +340,10 @@ class DistSlave(CovController):
             # data file to indicate that we have finished.
             self.config.slaveoutput['cov_slave_node_id'] = self.nodeid
         else:
-            # By default, strict=False, so 
             if not _fix3c:
                 self.cov.combine()
                 self.cov.save()
             else:
-                #if not self.cov.get_option("run:parallel"):
-                #    self.cov.combine()
                 try:
                     self.cov.combine(strict=True)
                 except CoverageException:

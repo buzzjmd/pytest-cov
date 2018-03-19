@@ -156,8 +156,15 @@ DEST_DIR = 'cov_dest'
 REPORT_NAME = 'cov.xml'
 
 xdist = pytest.mark.parametrize('opts', ['', '-n 1'], ids=['nodist', 'xdist'])
-parallel = pytest.mark.parametrize('parallel', [None,False,True], 
-          ids=['noparallel', 'parallelfalse', 'paralleltrue'])
+if _fix:
+    parallel = pytest.mark.parametrize('parallel', [None,False,True], 
+        ids=['noparallel', 'parallelfalse', 'paralleltrue'])
+    parallel_if_fix = parallel
+else:
+    parallel = pytest.mark.parametrize('parallel', [True], 
+        ids=['paralleltrue'])
+    parallel_if_fix = pytest.mark.parametrize('parallel', [None], 
+        ids=['noparallel'])
 
 
 @pytest.fixture(params=[
@@ -177,18 +184,6 @@ def prop(request):
         result=request.param[2],
         result2=request.param[3],
     )
-
-
-def combine_coverage1(testdir):
-    assert testdir.tmpdir == os.getcwd()
-    cov = coverage.Coverage()
-    cov.load()
-    cov.combine()
-    cov.save()
-    stdout_file = testdir.tmpdir.join('stdout')
-    with stdout_file.open(mode='a') as f:
-        cov.report(file=f)
-    return stdout_file.read()
 
 
 def combine_coverage(testdir):
@@ -460,6 +455,7 @@ source = mod
             #"*WARNING: *Can't create report in parallel mode*",
             '*10 passed*',
         ])
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         cov = combine_coverage(testdir)
         report = get_coverage_report(cov, show_missing=True)
         LineMatcher(report.splitlines()).fnmatch_lines([
@@ -467,6 +463,7 @@ source = mod
             'src[\\/]mod* %s*' % prop.result,
         ])
     else:
+        assert glob.glob(str(testdir.tmpdir.join('.coverage'))), "GGG %s" % glob.glob(str(testdir.tmpdir.join('.coverage')))
         result.stdout.fnmatch_lines([
             '*- coverage: platform *, python * -*',
             'src[\\/]mod* %s *' % prop.result,
@@ -507,12 +504,14 @@ source =
                                '--cov-report=term-missing',
                                parent_script)
     if _fix and parallel:
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         result.stdout.fnmatch_lines([
             "*WARNING: Failed to generate report*",
             #"*WARNING: *Can't create report in parallel mode*",
             #"*INTERNALERROR> ValueError: *Can't create report in parallel mode*",
             '*2 passed*',
         ])
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         cov = combine_coverage(testdir)
         report = get_coverage_report(cov, show_missing=True)
         LineMatcher(report.splitlines()).fnmatch_lines([
@@ -649,7 +648,7 @@ def test_dist_collocated(testdir, prop):
     assert result.ret == 0
 
 
-@parallel
+@parallel_if_fix
 def test_dist_not_collocated(testdir, prop, LineMatcher, parallel):
     script = testdir.makepyfile(prop.code)
     dir1 = testdir.mkdir('dir1')
@@ -662,7 +661,7 @@ source =
     .
     dir1
     dir2''' % (prop.conf, 
-        '' if parallel is None else '\nparallel = %s' % parallel)
+        '' if not _fix or parallel is None else '\nparallel = %s' % parallel)
     )
 
     result = testdir.runpytest('-v',
@@ -681,6 +680,7 @@ source =
             "*WARNING: Failed to generate report*",
             '*10 passed*',
         ])
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         cov = combine_coverage(testdir)
         report = get_coverage_report(cov, show_missing=True)
         LineMatcher(report.splitlines()).fnmatch_lines([
@@ -733,6 +733,7 @@ branch = true%s
         result.stdout.fnmatch_lines([
             "*WARNING: Failed to generate report*",
         ])
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         cov = combine_coverage(testdir)
         report = get_coverage_report(cov, show_missing=True)
         LineMatcher(report.splitlines()).fnmatch_lines([
@@ -769,6 +770,7 @@ def test_central_subprocess_change_cwd_with_pythonpath(testdir, monkeypatch, Lin
         result.stdout.fnmatch_lines([
             "*WARNING: Failed to generate report*",
         ])
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         cov = combine_coverage(testdir)
         report = get_coverage_report(cov, show_missing=True)
         LineMatcher(report.splitlines()).fnmatch_lines([
@@ -805,6 +807,7 @@ omit =
         result.stdout.fnmatch_lines([
             "*WARNING: Failed to generate report*",
         ])
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         cov = combine_coverage(testdir)
         report = get_coverage_report(cov)
         LineMatcher(report.splitlines()).fnmatch_lines([
@@ -1399,9 +1402,7 @@ data_file = %s
                                '--max-slave-restart=0',
                                script)
     assert result.ret == 0
-    assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data')))
-    if _fix and parallel:
-        assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data.*')))
+    assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data*')))
 
 
 def test_external_data_file_negative(testdir):
