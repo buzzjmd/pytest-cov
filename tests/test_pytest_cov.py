@@ -1376,7 +1376,7 @@ def test_dist_bare_cov(testdir):
     assert result.ret == 0
 
 
-pytest.mark.skipif('sys.platform == "win32" or _fix')
+@pytest.mark.skipif('(sys.platform == "win32") or not _fix')
 def test_dist_bare_cov2(testdir, LineMatcher):
     script = testdir.makepyfile(SCRIPT_SIMPLE)
     conf = '[run]\n%s\n' % 'parallel=true'
