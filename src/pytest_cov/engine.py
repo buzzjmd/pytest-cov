@@ -15,6 +15,7 @@ from .compat import StringIO
 _fix = 1
 _fix0 = 1 if _fix < 0 else _fix
 
+
 class CovController(object):
     """Base class for different plugin implementations."""
 
@@ -93,8 +94,8 @@ class CovController(object):
                 return total
 
         if _fix0 and self.combining_cov.get_option("run:parallel"):
-            raise CoverageException("Can't create report in parallel mode "
-            #raise ValueError("Can't create report in parallel mode "
+            raise CoverageException(
+                "Can't create report in parallel mode "
                 "(instead, use '--cov-report=' option and run "
                 "'coverage combine; coverage  report' "
                 "when tests complete)")
@@ -156,6 +157,7 @@ _fix1a = 1 if _fix < 0 else _fix
 _fix1e = 1 if _fix < 0 else _fix
 _fix1c = 1 if _fix < 0 else _fix  # 1
 
+
 class Central(CovController):
     """Implementation for centralised operation."""
 
@@ -169,7 +171,6 @@ class Central(CovController):
                                                branch=self.cov_branch,
                                                data_file=os.path.abspath(self.cov.config.data_file),
                                                config_file=self.cov_config)
-
 
         if _fix1a and (self.cov_append and self.combining_cov.get_option("run:parallel")):
             raise CoverageException("Can't append to data files in parallel mode.")
@@ -207,6 +208,7 @@ _fix2e = 1 if _fix < 0 else _fix
 _fix2c = 1 if _fix < 0 else _fix
 _fix_tag_master_and_slave_coverage_files = 0
 
+
 class DistMaster(CovController):
     """Implementation for distributed master."""
 
@@ -236,7 +238,7 @@ class DistMaster(CovController):
                 self.cov.load()
             else:
                 self.cov.erase()
-        
+
         self.cov.start()
         self.cov.config.paths['source'] = [self.topdir]
 
@@ -299,6 +301,7 @@ class DistMaster(CovController):
 _fix3e = 1 if _fix < 0 else _fix
 _fix3c = 1 if _fix < 0 else _fix
 
+
 class DistSlave(CovController):
     """Implementation for distributed slaves."""
 
@@ -326,7 +329,7 @@ class DistSlave(CovController):
                                                branch=self.cov_branch,
                                                data_file=os.path.abspath(self.cov.config.data_file),
                                                config_file=self.cov_config)
-        
+
         if not _fix3e:
             if self.cov_append:
                 self.cov.load()
