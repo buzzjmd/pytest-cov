@@ -182,7 +182,7 @@ class Central(CovController):
         else:
             if self.cov_append:
                 self.combining_cov.load()
-            else:
+            elif not self.combining_cov.get_option("run:parallel"):
                 self.cov.erase()
         self.cov.start()
         self.set_env()
@@ -205,6 +205,7 @@ class Central(CovController):
 
 _fix2e = 1 if _fix < 0 else _fix
 _fix2c = 1 if _fix < 0 else _fix
+_fix_tag_master_and_slave_coverage_files = 0
 
 class DistMaster(CovController):
     """Implementation for distributed master."""
@@ -222,12 +223,20 @@ class DistMaster(CovController):
                                                branch=self.cov_branch,
                                                data_file=os.path.abspath(self.cov.config.data_file),
                                                config_file=self.cov_config)
-        if _fix2e and self.cov_append:
-            self.combining_cov.load()
-        elif not _fix2e and self.cov_append:
-            self.cov.load()
+
+        if _fix2e:
+            if _fix_tag_master_and_slave_coverage_files:
+                self.cov.config.data_file = self.cov.config.data_file + '.master'
+            if self.cov_append:
+                self.combining_cov.load()
+            elif not self.combining_cov.get_option("run:parallel"):
+                self.cov.erase()
         else:
-            self.cov.erase()
+            if self.cov_append:
+                self.cov.load()
+            else:
+                self.cov.erase()
+        
         self.cov.start()
         self.cov.config.paths['source'] = [self.topdir]
 
@@ -278,8 +287,8 @@ class DistMaster(CovController):
         """Combines coverage data and sets the list of coverage objects to report on."""
 
         self.cov.stop()
-        self.cov.save()
         if not _fix2c or not self.combining_cov.get_option("run:parallel"):
+            self.cov.save()
             # Combine all the suffix files into the data file.
             self.cov = self.combining_cov
             self.cov.load()
@@ -288,8 +297,7 @@ class DistMaster(CovController):
 
 
 _fix3e = 1 if _fix < 0 else _fix
-#_fix3c = 1 if _fix < 0 else _fix
-_fix3c = 0
+_fix3c = 1 if _fix < 0 else _fix
 
 class DistSlave(CovController):
     """Implementation for distributed slaves."""
@@ -314,14 +322,22 @@ class DistSlave(CovController):
                                      branch=self.cov_branch,
                                      data_suffix=True,
                                      config_file=self.cov_config)
+        self.combining_cov = coverage.coverage(source=self.cov_source,
+                                               branch=self.cov_branch,
+                                               data_file=os.path.abspath(self.cov.config.data_file),
+                                               config_file=self.cov_config)
+        
         if not _fix3e:
             if self.cov_append:
                 self.cov.load()
             else:
                 self.cov.erase()
         else:
+            if _fix_tag_master_and_slave_coverage_files:
+                self.cov.config.data_file = self.cov.config.data_file + '.slave'
             if self.cov_append:
                 self.combining_cov.load()
+            # Slave coverage uses parallel mode, so don't erase
         self.cov.start()
         self.set_env()
 
@@ -344,10 +360,8 @@ class DistSlave(CovController):
                 self.cov.combine()
                 self.cov.save()
             else:
-                try:
-                    self.cov.combine(strict=True)
-                except CoverageException:
-                    pass
+                if not self.combining_cov.get_option("run:parallel"):
+                    self.cov.combine()
                 self.cov.save()
 
             # If we are not collocated then add the current path

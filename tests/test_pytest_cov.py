@@ -186,18 +186,24 @@ def prop(request):
     )
 
 
-def combine_coverage(testdir):
+def combine_coverage(testdir, data_file=None, config_file=None, data_paths=None, cov=None):
     assert testdir.tmpdir == os.getcwd()
-    cov = coverage.Coverage()
+    if cov is None:
+        opts = {}
+        if data_file is not None: 
+            opts['data_file'] = data_file.strpath
+        if data_file is not None: 
+            opts['config_file'] = config_file.strpath
+        cov = coverage.Coverage(**opts)
     cov.load()
-    cov.combine()
+    cov.combine(data_paths=data_paths)
     cov.save()
     return cov
 
 
-def get_coverage_report(cov, show_missing=False):
+def get_coverage_report(cov, **kwargs):
     buff = StringIO()
-    cov.report(file=buff,  show_missing=show_missing)
+    cov.report(file=buff,  **kwargs)
     return buff.getvalue()
 
 
@@ -217,6 +223,29 @@ def test_central(testdir, prop):
         '*10 passed*'
     ])
     assert result.ret == 0
+
+
+@pytest.mark.skipif('not _fix')
+def test_central_parallel_coverage_not_erased(testdir):
+    code = 'def test_it():\n    assert 1\n'
+    conf = '[run]\n%s\n' % 'parallel=true'
+    script = testdir.makepyfile(code)
+    testdir.tmpdir.join('.coveragerc').write(conf)
+
+    result = testdir.runpytest('-v',
+                               '--cov=%s' % script.dirpath(),
+                               '--cov-report=',
+                               script)
+    assert result.ret == 0
+
+    result2 = testdir.runpytest('-v',
+                               '--cov=%s' % script.dirpath(),
+                               '--cov-report=',
+                               script)
+    assert result2.ret == 0
+
+    coverage_files = glob.glob(str(testdir.tmpdir.join('.coverage.*')))
+    assert  len(coverage_files) == 2
 
 
 def test_annotate(testdir):
@@ -452,7 +481,6 @@ source = mod
     if _fix and parallel:
         result.stdout.fnmatch_lines([
             "*WARNING: Failed to generate report*",
-            #"*WARNING: *Can't create report in parallel mode*",
             '*10 passed*',
         ])
         assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
@@ -507,8 +535,6 @@ source =
         assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
         result.stdout.fnmatch_lines([
             "*WARNING: Failed to generate report*",
-            #"*WARNING: *Can't create report in parallel mode*",
-            #"*INTERNALERROR> ValueError: *Can't create report in parallel mode*",
             '*2 passed*',
         ])
         assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
@@ -663,10 +689,11 @@ source =
     dir2''' % (prop.conf, 
         '' if not _fix or parallel is None else '\nparallel = %s' % parallel)
     )
+    report_type = '' if parallel else 'term-missing'
 
     result = testdir.runpytest('-v',
                                '--cov=%s' % script.dirpath(),
-                               '--cov-report=term-missing',
+                               '--cov-report=%s' % report_type,
                                '--dist=load',
                                '--tx=popen//chdir=%s' % dir1,
                                '--tx=popen//chdir=%s' % dir2,
@@ -677,7 +704,6 @@ source =
 
     if _fix and parallel:
         result.stdout.fnmatch_lines([
-            "*WARNING: Failed to generate report*",
             '*10 passed*',
         ])
         assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
@@ -843,7 +869,8 @@ def test_dist_subprocess_collocated(testdir):
     assert result.ret == 0
 
 
-def test_dist_subprocess_not_collocated(testdir, tmpdir):
+@parallel_if_fix
+def test_dist_subprocess_not_collocated(testdir, tmpdir, LineMatcher, parallel):
     scripts = testdir.makepyfile(parent_script=SCRIPT_PARENT,
                                  child_script=SCRIPT_CHILD)
     parent_script = scripts.dirpath().join('parent_script.py')
@@ -851,15 +878,22 @@ def test_dist_subprocess_not_collocated(testdir, tmpdir):
 
     dir1 = tmpdir.mkdir('dir1')
     dir2 = tmpdir.mkdir('dir2')
-    testdir.tmpdir.join('.coveragerc').write('''
+    config_file = testdir.tmpdir.join('.coveragerc')
+    config_file.write('''
 [paths]
 source =
     %s
     */dir1
     */dir2
-''' % scripts.dirpath())
+[run]%s
+''' % (scripts.dirpath(),
+        '' if not _fix or parallel is None else '\nparallel = %s' % parallel))
+
+    report_type = '' if parallel else 'term-missing'
+
     result = testdir.runpytest('-v',
                                '--cov=%s' % scripts.dirpath(),
+                               '--cov-report=%s' % report_type,
                                '--dist=load',
                                '--tx=popen//chdir=%s' % dir1,
                                '--tx=popen//chdir=%s' % dir2,
@@ -869,11 +903,29 @@ source =
                                '--max-slave-restart=0',
                                parent_script)
 
-    result.stdout.fnmatch_lines([
-        '*- coverage: platform *, python * -*',
-        'child_script* %s*' % CHILD_SCRIPT_RESULT,
-        'parent_script* %s*' % PARENT_SCRIPT_RESULT,
-    ])
+    if _fix and parallel:
+        result.stdout.fnmatch_lines([
+            '*2 passed*',
+        ])
+        assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
+
+        data_file = testdir.tmpdir.join('.coverage')
+        data_paths=[testdir.tmpdir.strpath, dir1.strpath, dir2.strpath]
+        cov = combine_coverage(testdir, data_file=data_file, config_file=config_file, data_paths=data_paths)
+
+        report = get_coverage_report(cov, show_missing=True, ignore_errors=True)
+        print(report)
+        LineMatcher(report.splitlines()).fnmatch_lines([
+            'Name* Stmts* Miss* Cover*',
+            'child_script* %s*' % CHILD_SCRIPT_RESULT,
+            'parent_script* %s*' % PARENT_SCRIPT_RESULT,
+        ])
+    else:
+        result.stdout.fnmatch_lines([
+            '*- coverage: platform *, python * -*',
+            'child_script* %s*' % CHILD_SCRIPT_RESULT,
+            'parent_script* %s*' % PARENT_SCRIPT_RESULT,
+        ])
     assert result.ret == 0
 
 
@@ -1324,6 +1376,28 @@ def test_dist_bare_cov(testdir):
     assert result.ret == 0
 
 
+pytest.mark.skipif('sys.platform == "win32" or _fix')
+def test_dist_bare_cov2(testdir, LineMatcher):
+    script = testdir.makepyfile(SCRIPT_SIMPLE)
+    conf = '[run]\n%s\n' % 'parallel=true'
+    testdir.tmpdir.join('.coveragerc').write(conf)
+    result = testdir.runpytest('-v',
+                               '--cov=%s' % script.dirpath(),
+                               '--cov-report=',
+                               '-n', '1',
+                               script)
+    assert glob.glob(str(testdir.tmpdir.join('.coverage.*')))
+    assert len(glob.glob(str(testdir.tmpdir.join('.coverage.*')))) == 1
+
+    cov = combine_coverage(testdir)
+    report = get_coverage_report(cov)
+    LineMatcher(report.splitlines()).fnmatch_lines([
+        'Name* Stmts* Miss* Cover*',
+        'test_dist_bare_cov2* %s*' % SCRIPT_SIMPLE_RESULT,
+    ])
+    assert result.ret == 0
+
+
 def test_not_started_plugin_does_not_fail(testdir):
     class ns:
         cov_source = [True]
@@ -1396,11 +1470,13 @@ data_file = %s
         testdir.tmpdir.join('some/special/place/coverage-data').ensure()))
         
 
+    pytest_args = ['--cov-report='] if parallel else []
     result = testdir.runpytest('-v',
                                '--cov=%s' % script.dirpath(),
                                '-n', '1',
                                '--max-slave-restart=0',
-                               script)
+                               script,
+                               *pytest_args)
     assert result.ret == 0
     assert glob.glob(str(testdir.tmpdir.join('some/special/place/coverage-data*')))
 
